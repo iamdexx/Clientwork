@@ -2,36 +2,47 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const session = await auth();
   if (!session?.user || session.user.role !== "admin") {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const { searchParams } = new URL(req.url);
+  const from = searchParams.get("from");
+  const to = searchParams.get("to");
+
+  const dateFilter = from && to
+    ? { clockIn: { gte: new Date(from), lt: new Date(to) } }
+    : undefined;
+
   const users = await prisma.user.findMany({
     include: {
       timeEntries: {
+        where: dateFilter,
         orderBy: { clockIn: "desc" },
       },
     },
     orderBy: { name: "asc" },
   });
 
-  const report = users.map((user) => {
-    const totalMs = user.timeEntries.reduce((sum, entry) => {
-      if (!entry.clockOut) return sum;
-      return sum + (entry.clockOut.getTime() - entry.clockIn.getTime());
-    }, 0);
-    const totalHours = Math.round((totalMs / 3600000) * 100) / 100;
+  const report = users
+    .filter((user) => user.role !== "admin")
+    .map((user) => {
+      const totalMs = user.timeEntries.reduce((sum, entry) => {
+        if (!entry.clockOut) return sum;
+        return sum + (entry.clockOut.getTime() - entry.clockIn.getTime());
+      }, 0);
+      const totalHours = Math.round((totalMs / 3600000) * 100) / 100;
 
-    return {
-      id: user.id,
-      name: user.name || user.email,
-      email: user.email,
-      totalHours,
-      entries: user.timeEntries,
-    };
-  });
+      return {
+        id: user.id,
+        name: user.name || user.email,
+        email: user.email,
+        totalHours,
+        entries: user.timeEntries,
+      };
+    });
 
   return NextResponse.json(report);
 }

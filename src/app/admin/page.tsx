@@ -29,6 +29,28 @@ interface UserInfo {
 
 type Tab = "hours" | "users" | "settings";
 
+function getMonday(d: Date) {
+  const date = new Date(d);
+  const day = date.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  date.setDate(date.getDate() + diff);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+function getSunday(monday: Date) {
+  const date = new Date(monday);
+  date.setDate(date.getDate() + 6);
+  date.setHours(23, 59, 59, 999);
+  return date;
+}
+
+function formatWeekLabel(monday: Date) {
+  const sunday = getSunday(monday);
+  const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
+  return `${monday.toLocaleDateString("en-US", opts)} - ${sunday.toLocaleDateString("en-US", opts)}, ${sunday.getFullYear()}`;
+}
+
 export default function AdminPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
@@ -46,9 +68,12 @@ export default function AdminPage() {
   const [emailMsg, setEmailMsg] = useState("");
   const [reportMsg, setReportMsg] = useState("");
   const [reportSending, setReportSending] = useState(false);
+  const [weekStart, setWeekStart] = useState(() => getMonday(new Date()));
 
-  const fetchReport = useCallback(async () => {
-    const res = await fetch("/api/admin/time-entries");
+  const fetchReport = useCallback(async (monday: Date) => {
+    const from = monday.toISOString();
+    const to = new Date(getSunday(monday).getTime() + 1).toISOString();
+    const res = await fetch(`/api/admin/time-entries?from=${from}&to=${to}`);
     if (res.ok) {
       const data = await res.json();
       setReport(data);
@@ -75,13 +100,13 @@ export default function AdminPage() {
         router.push("/dashboard");
         return;
       }
-      fetchReport();
+      fetchReport(weekStart);
       fetchUsers();
     }
-  }, [status, session, router, fetchReport, fetchUsers]);
+  }, [status, session, router, fetchReport, fetchUsers, weekStart]);
 
   function formatDate(dateStr: string) {
-    return new Date(dateStr).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return new Date(dateStr).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
   }
 
   function formatTime(dateStr: string) {
@@ -95,6 +120,33 @@ export default function AdminPage() {
     return local.toISOString().slice(0, 16);
   }
 
+  function formatHoursMinutes(hours: number) {
+    const h = Math.floor(hours);
+    const m = Math.round((hours - h) * 60);
+    return `${h}h ${m}m`;
+  }
+
+  function goToPrevWeek() {
+    const prev = new Date(weekStart);
+    prev.setDate(prev.getDate() - 7);
+    setWeekStart(prev);
+    setLoading(true);
+  }
+
+  function goToNextWeek() {
+    const next = new Date(weekStart);
+    next.setDate(next.getDate() + 7);
+    setWeekStart(next);
+    setLoading(true);
+  }
+
+  function goToCurrentWeek() {
+    setWeekStart(getMonday(new Date()));
+    setLoading(true);
+  }
+
+  const isCurrentWeek = getMonday(new Date()).getTime() === weekStart.getTime();
+
   async function handleDeleteEntry(entryId: string) {
     if (!confirm("Delete this time entry?")) return;
     const res = await fetch("/api/admin/time-entries", {
@@ -102,7 +154,7 @@ export default function AdminPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: entryId }),
     });
-    if (res.ok) fetchReport();
+    if (res.ok) fetchReport(weekStart);
   }
 
   async function handleSaveEntry(entryId: string) {
@@ -118,7 +170,7 @@ export default function AdminPage() {
     });
     if (res.ok) {
       setEditingEntry(null);
-      fetchReport();
+      fetchReport(weekStart);
     }
   }
 
@@ -137,7 +189,7 @@ export default function AdminPage() {
     if (res.ok) {
       setEditingUser(null);
       fetchUsers();
-      fetchReport();
+      fetchReport(weekStart);
     }
   }
 
@@ -150,7 +202,7 @@ export default function AdminPage() {
     });
     if (res.ok) {
       fetchUsers();
-      fetchReport();
+      fetchReport(weekStart);
     }
   }
 
@@ -202,6 +254,7 @@ export default function AdminPage() {
   if (!session || session.user.role !== "admin") return null;
 
   const grandTotal = report.reduce((sum, u) => sum + u.totalHours, 0);
+  const employeesWithEntries = report.filter((u) => u.entries.length > 0);
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
@@ -228,18 +281,54 @@ export default function AdminPage() {
       {/* HOURS TAB */}
       {tab === "hours" && (
         <>
-          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6">
-            <div className="text-sm text-blue-600 font-medium">Total Hours (All Employees)</div>
-            <div className="text-2xl font-bold text-blue-900">{grandTotal.toFixed(2)} hours</div>
+          {/* Week Picker */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-4 flex items-center justify-between">
+            <button
+              onClick={goToPrevWeek}
+              className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium transition-colors"
+            >
+              &larr; Previous Week
+            </button>
+            <div className="text-center">
+              <div className="text-sm text-gray-500">Pay Period</div>
+              <div className="font-semibold text-gray-900">{formatWeekLabel(weekStart)}</div>
+              {isCurrentWeek && <div className="text-xs text-blue-600 font-medium">Current Week</div>}
+            </div>
+            <div className="flex gap-2">
+              {!isCurrentWeek && (
+                <button
+                  onClick={goToCurrentWeek}
+                  className="px-3 py-1.5 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg text-sm font-medium transition-colors"
+                >
+                  Today
+                </button>
+              )}
+              <button
+                onClick={goToNextWeek}
+                className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium transition-colors"
+              >
+                Next Week &rarr;
+              </button>
+            </div>
           </div>
 
+          {/* Weekly Totals */}
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6">
+            <div className="text-sm text-blue-600 font-medium">Total Hours This Pay Period</div>
+            <div className="text-2xl font-bold text-blue-900">{formatHoursMinutes(grandTotal)}</div>
+            <div className="text-sm text-blue-600 mt-1">
+              {employeesWithEntries.length} employee{employeesWithEntries.length !== 1 ? "s" : ""} with logged time
+            </div>
+          </div>
+
+          {/* Employee List */}
           <div className="space-y-4">
-            {report.length === 0 ? (
+            {employeesWithEntries.length === 0 ? (
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center text-gray-500">
-                No employees have logged time yet.
+                No time entries for this pay period.
               </div>
             ) : (
-              report.map((user) => (
+              employeesWithEntries.map((user) => (
                 <div key={user.id} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                   <button
                     onClick={() => setExpandedUser(expandedUser === user.id ? null : user.id)}
@@ -250,7 +339,7 @@ export default function AdminPage() {
                       <div className="text-sm text-gray-500">{user.email}</div>
                     </div>
                     <div className="text-right">
-                      <div className="text-lg font-bold text-gray-900">{user.totalHours} hrs</div>
+                      <div className="text-lg font-bold text-gray-900">{formatHoursMinutes(user.totalHours)}</div>
                       <div className="text-sm text-gray-500">{user.entries.length} entries</div>
                     </div>
                   </button>
@@ -479,7 +568,6 @@ export default function AdminPage() {
       {/* SETTINGS & REPORTS TAB */}
       {tab === "settings" && (
         <div className="space-y-6">
-          {/* Admin Email */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
             <h2 className="text-lg font-semibold text-gray-900 mb-1">Report Email</h2>
             <p className="text-sm text-gray-500 mb-4">Set the email address where hour reports will be sent.</p>
@@ -509,7 +597,6 @@ export default function AdminPage() {
             )}
           </div>
 
-          {/* Send Reports */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
             <h2 className="text-lg font-semibold text-gray-900 mb-1">Send Reports</h2>
             <p className="text-sm text-gray-500 mb-4">
